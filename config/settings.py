@@ -44,11 +44,10 @@ class Settings(BaseSettings):
     # Fairness
     bias_threshold: float = 0.1
     fairness_check_enabled: bool = True
-    
-    # API Settings
-    api_host: str = "localhost"
-    api_port: int = 8000
-    cors_origins: List[str] = ["http://localhost:3000", "http://localhost:8080"]
+      # API Settings
+    api_host: str = "0.0.0.0"
+    api_port: int = int(os.getenv("PORT", "8000"))  # Handle Render's PORT env var
+    cors_origins: List[str] = ["*"]  # Allow all origins for deployment
     
     # Security
     secret_key: str = "your-secret-key-change-in-production"

@@ -1,0 +1,25 @@
+version: 1
+services:
+  - type: web
+    name: transparent-ai-chatbot
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: DATABASE_URL
+        value: sqlite:///chatbot_memory.db
+      - key: LOG_LEVEL
+        value: INFO
+      - key: API_HOST
+        value: 0.0.0.0
+      - key: API_PORT
+        value: $PORT
+      - key: CORS_ORIGINS
+        value: '["*"]'
+    # Note: Add your actual API keys in Render dashboard
+    # OPENAI_API_KEY: (set in Render dashboard)
+    # QWEN_API_KEY: (set in Render dashboard)
+    # OPENROUTER_API_KEY: (set in Render dashboard)

@@ -37,9 +37,11 @@ def main():
         if args.mode == "model-card":
             generate_model_card(args.export_model_card, args.format)
         elif args.mode == "interactive":
-            run_interactive_mode()
-        elif args.mode == "api":
-            run_api_mode(args.host, args.port)
+            run_interactive_mode()        elif args.mode == "api":
+            # Use environment PORT for deployment platforms like Render
+            port = int(os.getenv("PORT", args.port))
+            host = os.getenv("HOST", args.host)
+            run_api_mode(host, port)
         elif args.mode == "demo":
             run_demo_mode()
         
