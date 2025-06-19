@@ -51,6 +51,7 @@ logs/
 
 # Data directories
 data/
+!src/data/
 search_index/
 chromadb/
 

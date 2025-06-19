@@ -22,7 +22,7 @@ from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 
-from src.data.database import db_manager, ConversationEntry, MemorySearchResult
+from src.data import db_manager, ConversationEntry, MemorySearchResult
 from config.settings import settings
 
 
