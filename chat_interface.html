@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Transparent AI Chatbot</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            padding: 20px;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            color: #333;
+        }
+        .chat-container {
+            height: 400px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 15px;
+            overflow-y: auto;
+            background-color: #fafafa;
+            margin-bottom: 20px;
+        }
+        .message {
+            margin: 10px 0;
+            padding: 10px;
+            border-radius: 8px;
+        }
+        .user-message {
+            background-color: #007bff;
+            color: white;
+            text-align: right;
+            margin-left: 20%;
+        }
+        .ai-message {
+            background-color: #e9ecef;
+            color: #333;
+            margin-right: 20%;
+        }
+        .input-container {
+            display: flex;
+            gap: 10px;
+        }
+        .message-input {
+            flex: 1;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 16px;
+        }
+        .send-btn {
+            padding: 12px 24px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        .send-btn:hover {
+            background-color: #0056b3;
+        }
+        .send-btn:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        .stats {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+        .loading {
+            text-align: center;
+            color: #666;
+            font-style: italic;
+        }
+        .error {
+            color: #dc3545;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🤖 Transparent AI Chatbot</h1>
+            <p>An AI with memory, search, and explainable responses</p>
+        </div>
+        
+        <div class="chat-container" id="chatContainer">
+            <div class="message ai-message">
+                <strong>AI:</strong> Hello! I'm a transparent AI chatbot with memory and explainability features. Ask me anything!
+            </div>
+        </div>
+        
+        <div class="input-container">
+            <input type="text" id="messageInput" class="message-input" placeholder="Type your message here..." onkeypress="handleKeyPress(event)">
+            <button onclick="sendMessage()" class="send-btn" id="sendBtn">Send</button>
+        </div>
+        
+        <div class="stats" id="stats">
+            <strong>Features:</strong> Memory System ✓ | Search ✓ | Explainability ✓ | Bias Detection ✓
+        </div>
+    </div>
+
+    <script>
+        const sessionId = 'web-session-' + Date.now();
+        
+        function handleKeyPress(event) {
+            if (event.key === 'Enter') {
+                sendMessage();
+            }
+        }
+        
+        async function sendMessage() {
+            const input = document.getElementById('messageInput');
+            const message = input.value.trim();
+            
+            if (!message) return;
+            
+            // Add user message to chat
+            addMessage(message, 'user');
+            input.value = '';
+            
+            // Disable send button
+            const sendBtn = document.getElementById('sendBtn');
+            sendBtn.disabled = true;
+            sendBtn.textContent = 'Sending...';
+            
+            try {
+                // Show loading message
+                addMessage('Thinking...', 'ai', 'loading');
+                
+                // Send request to API
+                const response = await fetch('http://localhost:8000/chat', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        message: message,
+                        session_id: sessionId
+                    })
+                });
+                
+                // Remove loading message
+                removeLastMessage();
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    
+                    // Add AI response
+                    let responseText = `<strong>AI:</strong> ${data.answer}<br>`;
+                    responseText += `<small>Confidence: ${(data.confidence * 100).toFixed(1)}%</small>`;
+                    
+                    if (data.sources && data.sources.length > 0) {
+                        responseText += `<br><small>Sources: ${data.sources.join(', ')}</small>`;
+                    }
+                    
+                    if (data.reasoning) {
+                        responseText += `<br><small>Reasoning: ${data.reasoning}</small>`;
+                    }
+                    
+                    addMessage(responseText, 'ai');
+                } else {
+                    const errorData = await response.json();
+                    addMessage(`Error: ${errorData.detail || 'Failed to get response'}`, 'ai', 'error');
+                }
+                
+            } catch (error) {
+                removeLastMessage();
+                addMessage(`Error: ${error.message}`, 'ai', 'error');
+            }
+            
+            // Re-enable send button
+            sendBtn.disabled = false;
+            sendBtn.textContent = 'Send';
+        }
+        
+        function addMessage(text, sender, className = '') {
+            const chatContainer = document.getElementById('chatContainer');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${sender}-message ${className}`;
+            
+            if (sender === 'user') {
+                messageDiv.innerHTML = `<strong>You:</strong> ${text}`;
+            } else {
+                messageDiv.innerHTML = text;
+            }
+            
+            chatContainer.appendChild(messageDiv);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+        
+        function removeLastMessage() {
+            const chatContainer = document.getElementById('chatContainer');
+            const lastMessage = chatContainer.lastElementChild;
+            if (lastMessage && lastMessage.classList.contains('loading')) {
+                chatContainer.removeChild(lastMessage);
+            }
+        }
+        
+        // Initialize
+        document.getElementById('messageInput').focus();
+    </script>
+</body>
+</html>
