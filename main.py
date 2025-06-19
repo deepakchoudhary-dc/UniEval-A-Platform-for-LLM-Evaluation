@@ -33,7 +33,8 @@ def main():
         # Validate settings
         validate_settings()
         print("✓ Settings validated successfully")
-          if args.mode == "model-card":
+        
+        if args.mode == "model-card":
             generate_model_card(args.export_model_card, args.format)
         elif args.mode == "interactive":
             run_interactive_mode()

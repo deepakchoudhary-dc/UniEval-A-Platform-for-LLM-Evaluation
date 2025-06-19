@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     
     # API Keys
     openai_api_key: str = ""
+    qwen_api_key: str = ""
+    openrouter_api_key: str = ""
     huggingface_api_key: str = ""
     
     # Database
