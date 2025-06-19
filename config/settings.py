@@ -3,6 +3,7 @@ Configuration settings for the AI Chatbot
 """
 import os
 from typing import List
+from pydantic import Field
 try:
     from pydantic_settings import BaseSettings
 except ImportError:
@@ -42,14 +43,20 @@ class Settings(BaseSettings):
     enable_lime: bool = True
     enable_shap: bool = True
     explanation_detail_level: str = "medium"  # low, medium, high
-    
-    # Fairness
+      # Fairness
     bias_threshold: float = 0.1
     fairness_check_enabled: bool = True
       # API Settings
     api_host: str = "0.0.0.0"
-    api_port: int = int(os.getenv("PORT", "8000"))  # Handle Render's PORT env var
+    api_port: int = 8000
     cors_origins: List[str] = ["*"]  # Allow all origins for deployment
+    
+    def __init__(self, **kwargs):
+        # Handle Render's PORT environment variable
+        port_env = os.getenv("PORT")
+        if port_env and port_env.isdigit():
+            kwargs.setdefault("api_port", int(port_env))
+        super().__init__(**kwargs)
     
     # Security
     secret_key: str = "your-secret-key-change-in-production"
