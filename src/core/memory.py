@@ -7,16 +7,9 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 import numpy as np
 from sentence_transformers import SentenceTransformer
-
-try:
-    import chromadb
-    from chromadb.config import Settings as ChromaSettings
-    HAS_CHROMADB = True
-except ImportError:
-    chromadb = None
-    ChromaSettings = None
-    HAS_CHROMADB = False
-    
+import chromadb
+from chromadb.config import Settings as ChromaSettings
+import spacy
 import nltk
 from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords
@@ -32,20 +25,27 @@ class MemoryManager:
     def __init__(self):
         self.embedding_model = SentenceTransformer(settings.embedding_model)
         self.session_id = str(uuid.uuid4())
-        
+
+        # Restore HAS_CHROMADB logic
+        try:
+            import chromadb
+            from chromadb.config import Settings as ChromaSettings
+            HAS_CHROMADB = True
+        except ImportError:
+            chromadb = None
+            ChromaSettings = None
+            HAS_CHROMADB = False
+
         # Initialize ChromaDB for vector storage (if available)
         if HAS_CHROMADB:
             try:
-                self.chroma_client = chromadb.Client(ChromaSettings(
-                    chroma_db_impl="duckdb+parquet",
-                    persist_directory=settings.search_index_path
-                ))
-                
+                self.chroma_client = chromadb.PersistentClient(
+                    path=settings.search_index_path
+                )
                 try:
                     self.collection = self.chroma_client.get_collection("conversations")
                 except:
                     self.collection = self.chroma_client.create_collection("conversations")
-                    
                 self.has_vector_db = True
             except Exception as e:
                 print(f"Warning: ChromaDB initialization failed: {e}")
@@ -57,32 +57,48 @@ class MemoryManager:
             self.chroma_client = None
             self.collection = None
             self.has_vector_db = False
-        
+
         # Initialize NLTK components
         self._init_nltk()
-          # Memory context for current session
+        # Memory context for current session
         self.current_context = []
         self.context_limit = 10  # Keep last 10 exchanges in active context
     
     def _init_nltk(self):
-        """Initialize NLTK components"""
-        try:
-            nltk.data.find('tokenizers/punkt')
-        except LookupError:
-            nltk.download('punkt')
+        """Initialize NLTK components with robust error handling"""
+        import logging
+        
+        nltk_resources = [
+            ('tokenizers/punkt_tab', 'punkt_tab'),
+            ('tokenizers/punkt', 'punkt'),
+            ('corpora/stopwords', 'stopwords'),
+            ('corpora/wordnet', 'wordnet')
+        ]
+        
+        for resource_path, resource_name in nltk_resources:
+            try:
+                nltk.data.find(resource_path)
+            except LookupError:
+                try:
+                    print(f"📦 Downloading NLTK resource: {resource_name}")
+                    nltk.download(resource_name, quiet=True)
+                except Exception as e:
+                    logging.warning(f"Failed to download NLTK resource {resource_name}: {e}")
+                    if resource_name == 'punkt_tab':
+                        # Fallback to punkt if punkt_tab fails
+                        try:
+                            nltk.download('punkt', quiet=True)
+                        except Exception as fallback_error:
+                            logging.error(f"Fallback NLTK download also failed: {fallback_error}")
         
         try:
-            nltk.data.find('corpora/stopwords')
-        except LookupError:
-            nltk.download('stopwords')
-        
-        try:
-            nltk.data.find('corpora/wordnet')
-        except LookupError:
-            nltk.download('wordnet')
-        
-        self.lemmatizer = WordNetLemmatizer()
-        self.stop_words = set(stopwords.words('english'))
+            self.lemmatizer = WordNetLemmatizer()
+            self.stop_words = set(stopwords.words('english'))
+        except Exception as e:
+            logging.warning(f"NLTK initialization warning: {e}")
+            # Fallback to basic processing
+            self.lemmatizer = None
+            self.stop_words = set(['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by'])
     
     def store_conversation(
         self,
@@ -338,17 +354,26 @@ class MemoryManager:
             self.current_context.clear()
     
     def _extract_keywords(self, text: str, max_keywords: int = 10) -> str:
-        """Extract keywords from text for search indexing"""
+        """Extract keywords from text for search indexing with robust processing"""
         
-        # Tokenize and clean
-        tokens = word_tokenize(text.lower())
+        try:
+            # Tokenize and clean
+            tokens = word_tokenize(text.lower())
+        except Exception:
+            # Fallback tokenization
+            tokens = text.lower().split()
         
         # Remove stopwords and non-alphabetic tokens
-        keywords = [
-            self.lemmatizer.lemmatize(token)
-            for token in tokens
-            if token.isalpha() and token not in self.stop_words and len(token) > 2
-        ]
+        keywords = []
+        for token in tokens:
+            if token.isalpha() and token not in self.stop_words and len(token) > 2:
+                if self.lemmatizer:
+                    try:
+                        keywords.append(self.lemmatizer.lemmatize(token))
+                    except Exception:
+                        keywords.append(token)
+                else:
+                    keywords.append(token)
         
         # Get unique keywords
         unique_keywords = list(set(keywords))

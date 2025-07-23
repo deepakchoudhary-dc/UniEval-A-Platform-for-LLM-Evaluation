@@ -1,24 +1,34 @@
 """
 FastAPI routes for the Transparent AI Chatbot
 """
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, status
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, validator
 from typing import Union, List, Dict, Any, Optional
 from datetime import datetime
 import json
 import re
+import logging
+import time
+import uuid
 
 from config.settings import settings
 from src.core.chatbot import TransparentChatbot
 from src.explainability.model_card import model_card_generator
 from src.fairness.bias_detector import bias_detector
+from src.utils.logger import get_logger, audit_log
+
+# Setup logger
+logger = get_logger(__name__)
 
 # Create FastAPI app
 app = FastAPI(
     title="Transparent AI Chatbot API",
-    description="AI Chatbot with Memory, Search, and Explainability",
-    version="1.0.0"
+    description="Enterprise AI Chatbot with Memory, Search, and Explainability",
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc"
 )
 
 # Add CORS middleware
@@ -26,38 +36,146 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["*"],
 )
 
-# Global chatbot instance (in production, use session management)
+# Global chatbot instance management
 chatbot_instances = {}
+MAX_INSTANCES = 100  # Prevent memory leaks
 
 
-# Request/Response models
+# Enhanced Request/Response models
 class ChatRequest(BaseModel):
-    message: str
-    session_id: Optional[str] = None
-    enable_memory_search: bool = True
-    enable_explanation: bool = True
-    enable_bias_check: bool = True
-    simple_response: bool = False  # New option for clean, simple responses
+    message: str = Field(..., min_length=1, max_length=5000, description="User message")
+    session_id: Optional[str] = Field(None, description="Session identifier")
+    enable_memory_search: bool = Field(True, description="Enable memory search")
+    enable_explanation: bool = Field(True, description="Enable AI explainability")
+    enable_bias_check: bool = Field(True, description="Enable bias detection")
+    simple_response: bool = Field(False, description="Return simplified response")
+    
+    @validator('message')
+    def validate_message(cls, v):
+        if not v.strip():
+            raise ValueError('Message cannot be empty')
+        # Remove potential injection patterns
+        if re.search(r'<script|javascript:|data:|vbscript:', v, re.IGNORECASE):
+            raise ValueError('Invalid message content')
+        return v.strip()
 
 
 class ChatResponse(BaseModel):
     answer: str
-    confidence: float
+    confidence: float = Field(..., ge=0.0, le=1.0)
     session_id: str
     timestamp: datetime
-    sources: List[str] = []
+    sources: Optional[List[str]] = None
     explanation: Optional[Dict[str, Any]] = None
     bias_check: Optional[Dict[str, Any]] = None
+    response_time_ms: Optional[int] = None
 
 
 class SimpleChatResponse(BaseModel):
     answer: str
     confidence: float
     session_id: str
+
+
+class ErrorResponse(BaseModel):
+    error: str
+    detail: Optional[str] = None
+    timestamp: datetime
+    request_id: Optional[str] = None
+
+
+# Middleware for request logging and timing
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    request_id = str(uuid.uuid4())
+    start_time = time.time()
+    
+    # Log request
+    logger.info(f"Request {request_id}: {request.method} {request.url}")
+    
+    # Add request ID to request state
+    request.state.request_id = request_id
+    
+    try:
+        response = await call_next(request)
+        process_time = (time.time() - start_time) * 1000
+        
+        # Log response
+        logger.info(f"Request {request_id} completed in {process_time:.2f}ms - Status: {response.status_code}")
+        
+        # Add timing header
+        response.headers["X-Process-Time"] = str(process_time)
+        response.headers["X-Request-ID"] = request_id
+        
+        return response
+        
+    except Exception as e:
+        process_time = (time.time() - start_time) * 1000
+        logger.error(f"Request {request_id} failed in {process_time:.2f}ms: {str(e)}")
+        
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "Internal server error",
+                "detail": str(e),
+                "timestamp": datetime.utcnow().isoformat(),
+                "request_id": request_id
+            }
+        )
+
+
+# Exception handlers
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    request_id = getattr(request.state, 'request_id', 'unknown')
+    logger.warning(f"HTTP {exc.status_code} for request {request_id}: {exc.detail}")
+    
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": exc.detail,
+            "timestamp": datetime.utcnow().isoformat(),
+            "request_id": request_id
+        }
+    )
+
+
+@app.exception_handler(ValueError)
+async def value_error_handler(request: Request, exc: ValueError):
+    request_id = getattr(request.state, 'request_id', 'unknown')
+    logger.warning(f"Validation error for request {request_id}: {str(exc)}")
+    
+    return JSONResponse(
+        status_code=400,
+        content={
+            "error": "Validation error",
+            "detail": str(exc),
+            "timestamp": datetime.utcnow().isoformat(),
+            "request_id": request_id
+        }
+    )
+
+
+def get_or_create_chatbot(session_id: str) -> TransparentChatbot:
+    """Get or create chatbot instance with memory management"""
+    if session_id not in chatbot_instances:
+        # Clean up old instances if we have too many
+        if len(chatbot_instances) >= MAX_INSTANCES:
+            # Remove oldest instances (simplified cleanup)
+            oldest_sessions = list(chatbot_instances.keys())[:10]
+            for old_session in oldest_sessions:
+                del chatbot_instances[old_session]
+            logger.info(f"Cleaned up {len(oldest_sessions)} old chatbot instances")
+        
+        chatbot_instances[session_id] = TransparentChatbot()
+        chatbot_instances[session_id].set_session_id(session_id)
+        logger.info(f"Created new chatbot instance for session: {session_id}")
+    
+    return chatbot_instances[session_id]
     timestamp: datetime
     sources: List[str] = []
     reasoning: Optional[str] = None  # Simplified reasoning summary
@@ -222,47 +340,57 @@ async def root():
     }
 
 
-@app.post("/chat")
-async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
-    """Main chat endpoint with optional simple response format"""
+@app.post("/chat", response_model=Union[ChatResponse, SimpleChatResponse])
+async def chat(request: ChatRequest, http_request: Request, background_tasks: BackgroundTasks):
+    """Enhanced chat endpoint with robust error handling and performance tracking"""
+    
+    start_time = time.time()
+    request_id = getattr(http_request.state, 'request_id', 'unknown')
     
     try:
         # Generate session ID if not provided
-        session_id = request.session_id or f"session_{datetime.now().timestamp()}"
+        session_id = request.session_id or f"session_{int(datetime.now().timestamp())}"
+        
+        # Audit log
+        audit_log("chat_request", session_id, {
+            "message_length": len(request.message),
+            "request_id": request_id,
+            "enable_explanation": request.enable_explanation,
+            "enable_bias_check": request.enable_bias_check
+        })
         
         # Get chatbot instance
-        chatbot = get_chatbot(session_id)
+        chatbot = get_or_create_chatbot(session_id)
         
-        # Process chat request
-        response = chatbot.chat(
-            user_query=request.message,
-            enable_memory_search=request.enable_memory_search,
-            enable_explanation=request.enable_explanation,
-            enable_bias_check=request.enable_bias_check
-        )
+        # Process chat request with timeout handling
+        try:
+            response = chatbot.chat(
+                user_query=request.message,
+                enable_memory_search=request.enable_memory_search,
+                enable_explanation=request.enable_explanation,
+                enable_bias_check=request.enable_bias_check
+            )
+        except Exception as chat_error:
+            logger.error(f"Chat processing error for request {request_id}: {str(chat_error)}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Chat processing failed: {str(chat_error)}"
+            )
         
-        # Extract bias check results if available
-        bias_check_data = None
-        if hasattr(response, 'bias_check_results'):
-            bias_check_data = response.bias_check_results
+        # Calculate response time
+        response_time_ms = int((time.time() - start_time) * 1000)
         
-        # Return simple or detailed response based on request
+        # Log successful response
+        logger.info(f"Chat completed for session {session_id} in {response_time_ms}ms")
+        
+        # Return appropriate response format
         if request.simple_response:
-            # Extract simplified reasoning from explanation
-            reasoning = None
-            if response.explanation and response.explanation.get('summary', {}).get('reasoning'):
-                reasoning = response.explanation['summary']['reasoning'][:200] + "..." if len(response.explanation['summary']['reasoning']) > 200 else response.explanation['summary']['reasoning']
-            
             return SimpleChatResponse(
                 answer=response.answer,
                 confidence=response.confidence,
-                session_id=session_id,
-                timestamp=response.timestamp,
-                sources=response.sources[:3],  # Limit to top 3 sources
-                reasoning=reasoning
+                session_id=session_id
             )
         else:
-            # Return detailed response
             return ChatResponse(
                 answer=response.answer,
                 confidence=response.confidence,
@@ -270,11 +398,18 @@ async def chat(request: ChatRequest, background_tasks: BackgroundTasks):
                 timestamp=response.timestamp,
                 sources=response.sources,
                 explanation=response.explanation,
-                bias_check=bias_check_data
+                bias_check=getattr(response, 'bias_check_results', None),
+                response_time_ms=response_time_ms
             )
         
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Unexpected error in chat endpoint for request {request_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail="An unexpected error occurred while processing your request"
+        )
 
 
 @app.post("/chat/simple", response_model=SimpleChatResponse)
@@ -567,6 +702,174 @@ async def health_check():
             "error": str(e),
             "timestamp": datetime.utcnow().isoformat()
         }
+
+
+# Evaluation endpoints
+@app.get("/evaluation/summary/{session_id}")
+async def get_evaluation_summary(session_id: str, limit: int = 10):
+    """
+    Get evaluation summary for a session.
+    
+    Args:
+        session_id: Session identifier
+        limit: Number of recent evaluations to include
+        
+    Returns:
+        Evaluation summary with scores and trends
+    """
+    try:
+        chatbot = get_chatbot(session_id)
+        summary = chatbot.get_evaluation_summary(limit=limit)
+        
+        audit_log(
+            action="get_evaluation_summary",
+            session_id=session_id,
+            details={"limit": limit}
+        )
+        
+        return {
+            "status": "success",
+            "data": summary,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting evaluation summary: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get evaluation summary: {str(e)}"
+        )
+
+
+@app.post("/evaluation/conversation/{session_id}")
+async def evaluate_conversation(session_id: str):
+    """
+    Evaluate the quality of the current conversation.
+    
+    Args:
+        session_id: Session identifier
+        
+    Returns:
+        Conversation-level evaluation results
+    """
+    try:
+        chatbot = get_chatbot(session_id)
+        evaluation_result = await chatbot.evaluate_conversation_quality()
+        
+        audit_log(
+            action="evaluate_conversation",
+            session_id=session_id,
+            details={"evaluation_score": evaluation_result.get("overall_conversation_score", 0)}
+        )
+        
+        return {
+            "status": "success",
+            "data": evaluation_result,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error evaluating conversation: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to evaluate conversation: {str(e)}"
+        )
+
+
+@app.get("/evaluation/database-summary")
+async def get_database_evaluation_summary(limit: int = 100):
+    """
+    Get evaluation summary from database across all sessions.
+    
+    Args:
+        limit: Number of recent evaluations to analyze
+        
+    Returns:
+        Comprehensive evaluation statistics
+    """
+    try:
+        from src.data.database import db_manager
+        
+        summary = db_manager.get_evaluation_summary(limit=limit)
+        
+        audit_log(
+            action="get_database_evaluation_summary",
+            details={"limit": limit}
+        )
+        
+        return {
+            "status": "success",
+            "data": summary,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting database evaluation summary: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get database evaluation summary: {str(e)}"
+        )
+
+
+class EvaluationRequest(BaseModel):
+    input_text: str = Field(..., min_length=1, max_length=5000)
+    output_text: str = Field(..., min_length=1, max_length=10000)
+    context: Optional[str] = None
+    expected_output: Optional[str] = None
+    criteria: Optional[List[str]] = None
+
+
+@app.post("/evaluation/single")
+async def evaluate_single_response(request: EvaluationRequest):
+    """
+    Evaluate a single response using Opik.
+    
+    Args:
+        request: Evaluation request with input/output texts
+        
+    Returns:
+        Evaluation results and recommendations
+    """
+    try:
+        from src.evaluation.opik_evaluator import OpikEvaluator, evaluate_chatbot_response
+        
+        evaluator = OpikEvaluator(project_name="api-evaluation")
+        
+        if not evaluator.is_available():
+            return {
+                "status": "warning",
+                "message": "Opik evaluation not available, using fallback",
+                "data": evaluator._fallback_evaluation(request.input_text, request.output_text),
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        
+        evaluation_result = await evaluate_chatbot_response(
+            evaluator=evaluator,
+            user_input=request.input_text,
+            bot_response=request.output_text,
+            context=request.context
+        )
+        
+        audit_log(
+            action="single_response_evaluation",
+            details={
+                "evaluation_score": evaluation_result.get("overall_score", 0),
+                "criteria": request.criteria or []
+            }
+        )
+        
+        return {
+            "status": "success",
+            "data": evaluation_result,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in single response evaluation: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to evaluate response: {str(e)}"
+        )
 
 
 # WebSocket support for real-time chat (optional)
