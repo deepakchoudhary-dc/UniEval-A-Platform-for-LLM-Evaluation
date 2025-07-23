@@ -74,32 +74,6 @@ class ModelCard(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
-class EvaluationResult(Base):
-    """Database model for storing LLM evaluation results"""
-    __tablename__ = "evaluation_results"
-    
-    id = Column(Integer, primary_key=True, index=True)
-    conversation_id = Column(String(255), index=True)
-    session_id = Column(String(255), index=True)
-    evaluation_timestamp = Column(DateTime, default=datetime.utcnow, index=True)
-    
-    # Evaluation scores
-    overall_score = Column(Float)
-    relevance_score = Column(Float)
-    hallucination_score = Column(Float)
-    moderation_score = Column(Float)
-    faithfulness_score = Column(Float)
-    
-    # Evaluation details
-    evaluation_data = Column(JSON)  # Full evaluation result from Opik
-    recommendations = Column(JSON)  # List of recommendations
-    metrics_details = Column(JSON)  # Detailed metrics breakdown
-    
-    # Evaluation metadata
-    evaluator_version = Column(String(50))
-    evaluation_criteria = Column(JSON)  # Criteria used for evaluation
-
-
 # Pydantic models for API
 class ConversationResponse(BaseModel):
     """Response model for conversation"""
@@ -292,112 +266,6 @@ class DatabaseManager:
             ModelCard.model_name == model_name
         ).first()
     
-    def store_evaluation_result(
-        self,
-        conversation_id: str,
-        evaluation_data: Dict[str, Any],
-        session_id: Optional[str] = None
-    ) -> EvaluationResult:
-        """
-        Store LLM evaluation results in the database.
-        
-        Args:
-            conversation_id: ID of the conversation being evaluated
-            evaluation_data: Full evaluation result from Opik
-            session_id: Session ID for the conversation
-            
-        Returns:
-            Created EvaluationResult entry
-        """
-        try:
-            # Extract scores from evaluation data
-            metrics = evaluation_data.get("metrics", {})
-            overall_score = evaluation_data.get("overall_score", 0.0)
-            
-            # Extract individual metric scores
-            relevance_score = None
-            hallucination_score = None
-            moderation_score = None
-            faithfulness_score = None
-            
-            for metric_name, metric_data in metrics.items():
-                score = metric_data.get("score", 0.0) if isinstance(metric_data, dict) else 0.0
-                
-                if "relevance" in metric_name.lower():
-                    relevance_score = score
-                elif "hallucination" in metric_name.lower():
-                    hallucination_score = score
-                elif "moderation" in metric_name.lower():
-                    moderation_score = score
-                elif "faithfulness" in metric_name.lower():
-                    faithfulness_score = score
-            
-            # Create evaluation result entry
-            evaluation_result = EvaluationResult(
-                conversation_id=conversation_id,
-                session_id=session_id or "unknown",
-                overall_score=overall_score,
-                relevance_score=relevance_score,
-                hallucination_score=hallucination_score,
-                moderation_score=moderation_score,
-                faithfulness_score=faithfulness_score,
-                evaluation_data=evaluation_data,
-                recommendations=evaluation_data.get("recommendations", []),
-                metrics_details=metrics,
-                evaluator_version="opik-1.8.6",
-                evaluation_criteria=["relevance", "hallucination", "moderation", "faithfulness"]
-            )
-            
-            self.db_session.add(evaluation_result)
-            self.db_session.commit()
-            self.db_session.refresh(evaluation_result)
-            
-            return evaluation_result
-            
-        except Exception as e:
-            self.db_session.rollback()
-            raise Exception(f"Failed to store evaluation result: {e}")
-    
-    def get_evaluation_summary(self, limit: int = 100) -> Dict[str, Any]:
-        """
-        Get summary of recent evaluation results.
-        
-        Args:
-            limit: Number of recent evaluations to analyze
-            
-        Returns:
-            Summary statistics of evaluations
-        """
-        try:
-            # Get recent evaluations
-            recent_evaluations = self.db_session.query(EvaluationResult).order_by(
-                EvaluationResult.evaluation_timestamp.desc()
-            ).limit(limit).all()
-            
-            if not recent_evaluations:
-                return {"message": "No evaluation results found"}
-            
-            # Calculate summary statistics
-            overall_scores = [e.overall_score for e in recent_evaluations if e.overall_score is not None]
-            relevance_scores = [e.relevance_score for e in recent_evaluations if e.relevance_score is not None]
-            hallucination_scores = [e.hallucination_score for e in recent_evaluations if e.hallucination_score is not None]
-            
-            summary = {
-                "total_evaluations": len(recent_evaluations),
-                "average_overall_score": sum(overall_scores) / len(overall_scores) if overall_scores else 0,
-                "average_relevance_score": sum(relevance_scores) / len(relevance_scores) if relevance_scores else 0,
-                "average_hallucination_score": sum(hallucination_scores) / len(hallucination_scores) if hallucination_scores else 0,
-                "min_overall_score": min(overall_scores) if overall_scores else 0,
-                "max_overall_score": max(overall_scores) if overall_scores else 0,
-                "latest_evaluation": recent_evaluations[0].evaluation_timestamp.isoformat() if recent_evaluations else None,
-                "evaluation_trend": "stable"  # Could be enhanced with trend analysis
-            }
-            
-            return summary
-            
-        except Exception as e:
-            return {"error": f"Failed to get evaluation summary: {e}"}
-    
     def _cleanup_old_entries(self):
         """Remove old conversation entries if limit exceeded"""
         total_entries = self.db_session.query(ConversationEntry).count()
@@ -422,14 +290,6 @@ class DatabaseManager:
         
         for entry in old_entries:
             self.db_session.delete(entry)
-        
-        # Clean up old evaluation results too
-        old_evaluations = self.db_session.query(EvaluationResult).filter(
-            EvaluationResult.evaluation_timestamp < cutoff_date
-        ).all()
-        
-        for evaluation in old_evaluations:
-            self.db_session.delete(evaluation)
         
         self.db_session.commit()
     

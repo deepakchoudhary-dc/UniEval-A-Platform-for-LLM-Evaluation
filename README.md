@@ -1,6 +1,6 @@
 # AI Chatbot with Memory and Explainability
 
-An advanced AI chatbot featuring human-like memory, transparent decision-making, comprehensive search capabilities, and enterprise-level LLM evaluation.
+An advanced AI chatbot featuring human-like memory, transparent decision-making, and comprehensive search capabilities.
 
 ## Features
 
@@ -8,7 +8,6 @@ An advanced AI chatbot featuring human-like memory, transparent decision-making,
 - **Search Functionality**: Query past conversations and stored information
 - **Explainability**: LIME/SHAP integration for transparent AI decisions
 - **Fairness**: Bias detection and mitigation tools
-- **LLM Evaluation**: Opik integration for comprehensive response quality assessment
 - **Audit Logging**: Complete decision-making process tracking
 - **Model Cards**: Automated documentation of AI capabilities
 
@@ -28,30 +27,6 @@ cp .env.example .env
 3. Run the chatbot:
 ```bash
 python main.py
-```
-
-## LLM Evaluation with Opik
-
-This chatbot integrates Opik for comprehensive LLM evaluation, providing:
-
-- **Response Quality Assessment**: Automatic evaluation of relevance, accuracy, and coherence
-- **Hallucination Detection**: Identifies potential false or unsupported claims
-- **Content Moderation**: Ensures appropriate and safe responses
-- **Bias Detection**: Monitors for unfair or biased outputs
-- **Performance Monitoring**: Tracks evaluation metrics over time
-
-### Evaluation Features
-
-- Real-time response evaluation in background
-- Conversation-level quality assessment
-- Batch evaluation capabilities
-- Comprehensive evaluation reports
-- API endpoints for evaluation integration
-
-### Running Evaluation Demo
-
-```bash
-python demo_opik_evaluation.py
 ```
 
 ## Project Structure

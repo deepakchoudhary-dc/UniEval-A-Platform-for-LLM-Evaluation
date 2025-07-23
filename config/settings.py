@@ -33,15 +33,11 @@ class Settings(BaseSettings):
     # Search Settings
     search_index_path: str = "data/search_index"
     max_search_results: int = 10
-    # Model Settings
+      # Model Settings
     default_model: str = "gpt-3.5-turbo"
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     max_tokens: int = 4000
     temperature: float = 0.7
-
-    # Model Provider: openai, openrouter, ollama
-    model_provider: str = "openai"
-    ollama_model: str = "qwen3:1.7b"
     
     # Explainability
     enable_lime: bool = True
@@ -50,12 +46,6 @@ class Settings(BaseSettings):
       # Fairness
     bias_threshold: float = 0.1
     fairness_check_enabled: bool = True
-    
-    # Evaluation Settings
-    enable_opik_evaluation: bool = True
-    evaluation_criteria: List[str] = ["relevance", "hallucination", "moderation", "faithfulness"]
-    opik_project_name: str = "transparent-ai-chatbot"
-    
       # API Settings
     api_host: str = "0.0.0.0"
     api_port: int = 8000

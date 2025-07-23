@@ -4,7 +4,6 @@ Main AI Chatbot with Memory, Search, and Explainability
 import time
 import uuid
 import json
-import asyncio
 from datetime import datetime
 from typing import Dict, List, Any, Optional, Callable
 import openai
@@ -16,11 +15,7 @@ from src.core.search import search_engine
 from src.data.database import db_manager, ConversationResponse, ExplanationResult
 from src.explainability.lime_explainer import lime_explainer
 from src.explainability.shap_explainer import shap_explainer
-from src.fairness.advanced_bias_detector import advanced_bias_detector
-from src.evaluation.opik_evaluator import OpikEvaluator, evaluate_chatbot_response
-from src.utils.logger import get_logger
-
-logger = get_logger(__name__)
+from src.fairness.bias_detector import bias_detector
 
 
 class TransparentChatbot:
@@ -30,59 +25,42 @@ class TransparentChatbot:
     def __init__(self, model_name: str = None):
         self.model_name = model_name or settings.default_model
         self.session_id = str(uuid.uuid4())
-
-        self.model_provider = getattr(settings, "model_provider", "openai").lower()
-        self.ollama_model = getattr(settings, "ollama_model", "qwen3:1.7b")
-
-        # Provider logic
-        if self.model_provider == "ollama":
-            self.client = "ollama"
-            print(f"✅ Ollama client selected. Model: {self.ollama_model}")
-            self.use_openai = False
-        else:
-            # Initialize OpenAI client with fallback
-            api_key = settings.openai_api_key
-            self.use_openai = (
-                api_key and 
-                api_key.strip() and 
-                api_key.strip() != "your_openai_api_key_here" and
-                api_key.startswith(("sk-", "sk-proj-", "sk-or-"))
-            )
-            if self.use_openai:
-                if api_key.startswith("sk-or-"):
-                    # OpenRouter setup (OpenAI-compatible)
-                    self.client = OpenAI(
-                        api_key=api_key,
-                        base_url="https://openrouter.ai/api/v1"
-                    )
-                    self.model_name = "qwen/qwen-2.5-72b-instruct"  # Default Qwen model on OpenRouter
-                    print(f"✅ OpenRouter client initialized with key: {api_key[:15]}...")
-                    print(f"   Using model: {self.model_name}")
-                else:
-                    # OpenAI setup  
-                    self.client = OpenAI(api_key=api_key)
-                    print(f"✅ OpenAI client initialized with key: {api_key[:15]}...")
+        
+        # Initialize OpenAI client with fallback
+        api_key = settings.openai_api_key
+        self.use_openai = (
+            api_key and 
+            api_key.strip() and 
+            api_key.strip() != "your_openai_api_key_here" and
+            api_key.startswith(("sk-", "sk-proj-", "sk-or-"))
+        )
+        
+        if self.use_openai:
+            if api_key.startswith("sk-or-"):
+                # OpenRouter setup (OpenAI-compatible)
+                self.client = OpenAI(
+                    api_key=api_key,
+                    base_url="https://openrouter.ai/api/v1"
+                )
+                self.model_name = "qwen/qwen-2.5-72b-instruct"  # Default Qwen model on OpenRouter
+                print(f"✅ OpenRouter client initialized with key: {api_key[:15]}...")
+                print(f"   Using model: {self.model_name}")
             else:
-                self.client = None
-                print(f"⚠️ No valid API key found. Using fallback mode.")
-
+                # OpenAI setup  
+                self.client = OpenAI(api_key=api_key)
+                print(f"✅ OpenAI client initialized with key: {api_key[:15]}...")
+        else:
+            self.client = None
+            print(f"⚠️ No valid API key found. Using fallback mode.")        
         # Conversation context
         self.conversation_history = []
         self.current_context = {}
-
+        
         # Explainability settings
         self.enable_lime = settings.enable_lime
         self.enable_shap = settings.enable_shap
         self.explanation_detail = settings.explanation_detail_level
-
-        # Initialize Opik evaluator for LLM evaluation
-        self.enable_evaluation = getattr(settings, "enable_opik_evaluation", True)
-        self.opik_evaluator = OpikEvaluator(project_name="transparent-ai-chatbot") if self.enable_evaluation else None
-        if self.opik_evaluator and self.opik_evaluator.is_available():
-            logger.info("Opik evaluation enabled for LLM monitoring")
-        else:
-            logger.info("Opik evaluation not available or disabled")
-
+        
         # Initialize session in database
         db_manager.create_or_update_session(self.session_id)
     
@@ -121,49 +99,13 @@ class TransparentChatbot:
                     user_query, context_data, response_data
                 )
             
-            # Step 4: Advanced Bias Detection and Educational Response
+            # Step 4: Bias and fairness check
             bias_results = {}
             fairness_score = 1.0
-            
             if enable_bias_check and settings.fairness_check_enabled:
-                # First, analyze user input for bias
-                input_bias_analysis = advanced_bias_detector.analyze_input_bias(user_query, context_data)
-                
-                # If significant bias detected in input, provide educational response
-                if (input_bias_analysis["is_biased"] and 
-                    input_bias_analysis["severity_level"] in ["high", "medium"]):
-                    
-                    logger.warning(f"Significant bias detected in user input: {input_bias_analysis['bias_types']}")
-                    
-                    # Generate educational response
-                    bias_education_response = self._generate_bias_education_response(input_bias_analysis)
-                    
-                    if bias_education_response:
-                        # Replace the AI response with educational content
-                        response_data["answer"] = bias_education_response
-                        response_data["confidence"] = 0.95
-                        response_data["educational_intervention"] = True
-                        
-                        # Set bias results to the input analysis
-                        bias_results = {
-                            "input_bias": input_bias_analysis,
-                            "response_bias": {"is_biased": False, "educational_response": True},
-                            "bias_detected": True,
-                            "bias_types": input_bias_analysis["bias_types"],
-                            "educational_intervention": True,
-                            "severity_level": input_bias_analysis["severity_level"]
-                        }
-                        fairness_score = 0.9  # High fairness for educational intervention
-                    else:
-                        # Fallback to normal bias checking
-                        bias_results, fairness_score = self._check_bias_and_fairness(
-                            user_query, response_data["answer"], context_data
-                        )
-                else:
-                    # Normal bias checking on both input and response
-                    bias_results, fairness_score = self._check_bias_and_fairness(
-                        user_query, response_data["answer"], context_data
-                    )
+                bias_results, fairness_score = self._check_bias_and_fairness(
+                    user_query, response_data["answer"], context_data
+                )
               # Step 5: Store conversation in memory
             response_time_ms = int((time.time() - start_time) * 1000)
             
@@ -193,21 +135,6 @@ class TransparentChatbot:
                 session_id=self.session_id,
                 bias_check_results=bias_results if bias_results else None
             )
-            
-            # Step 8: Evaluate response with Opik (if enabled)
-            if self.enable_evaluation and self.opik_evaluator:
-                try:
-                    # Run evaluation asynchronously in background
-                    evaluation_task = self._evaluate_response_async(
-                        user_query=user_query,
-                        response=response_data["answer"],
-                        context=context_data.get("memory_context", ""),
-                        conversation_id=conversation_entry.id
-                    )
-                    # Start evaluation in background (don't wait for completion)
-                    asyncio.create_task(evaluation_task)
-                except Exception as eval_error:
-                    logger.warning(f"Failed to start response evaluation: {eval_error}")
             
             # Update conversation history
             self.conversation_history.append({
@@ -274,64 +201,97 @@ class TransparentChatbot:
         return context_data
     
     def _generate_response(self, user_query: str, context_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Generate AI response using OpenAI/OpenRouter/Ollama with context or fallback"""
-
-        # Ollama support
-        if self.model_provider == "ollama":
-            return self._generate_ollama_response(user_query, context_data)
-
-            decision_factors = {
-                "model_used": self.ollama_model,
-                "context_items_used": len(context_data.get("sources", [])),
-                "recent_context_count": len(context_data.get("recent_context", [])),
-                "similar_memories_count": len(context_data.get("similar_memories", [])),
-                "response_length": len(ai_response),
-                "temperature": settings.temperature
-            }
-            return {
-                "answer": ai_response,
-                "confidence": confidence,
-                "factors": decision_factors,
-                "raw_response": response.text
-            }
-
+        """Generate AI response using OpenAI/OpenRouter with context or fallback"""
+        
         # If OpenAI is not available, use fallback response
         if not self.use_openai or not self.client:
             return self._generate_fallback_response(user_query, context_data)
-
+        
         # Build system prompt with context
         system_prompt = self._build_system_prompt(context_data)
-
+        
         # Build conversation messages
         messages = [
             {"role": "system", "content": system_prompt}
         ]
-
+        
         # Add recent conversation history
         for item in context_data.get("recent_context", [])[-3:]:  # Last 3 exchanges
             messages.append({"role": "user", "content": item["query"]})
             messages.append({"role": "assistant", "content": item["response"]})
-        # Add current query
+          # Add current query
         messages.append({"role": "user", "content": user_query})
-
-        try:
-            # Use OpenAI-compatible client (for both OpenAI and Qwen)
-            response = self.client.chat.completions.create(
-                model=self.model_name,
-                messages=messages,
-                max_tokens=settings.max_tokens,
-                temperature=settings.temperature,
-                presence_penalty=0.1,
-                frequency_penalty=0.1
-            )
-
-            ai_response = response.choices[0].message.content
-
-            # Calculate confidence based on response characteristics
-            confidence = self._calculate_confidence(
-                user_query, ai_response, context_data, response
-            )
-
+        
+        try:            # Generate response based on client type
+            if self.client == "qwen_http":
+                # Use HTTP requests for Qwen API - Correct DashScope format
+                import requests
+                
+                # Qwen DashScope API endpoint
+                url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation"
+                headers = {
+                    "Authorization": f"Bearer {self.qwen_api_key}",
+                    "Content-Type": "application/json",
+                    "X-DashScope-SSE": "disable"
+                }
+                
+                # Convert to proper Qwen format - use messages directly
+                qwen_messages = []
+                for msg in messages:
+                    qwen_messages.append({
+                        "role": msg["role"] if msg["role"] != "assistant" else "assistant",
+                        "content": msg["content"]
+                    })
+                
+                data = {
+                    "model": "qwen-turbo",
+                    "input": {
+                        "messages": qwen_messages
+                    },
+                    "parameters": {
+                        "max_tokens": settings.max_tokens,
+                        "temperature": settings.temperature,
+                        "top_p": 0.8
+                    }
+                }
+                
+                print(f"🔧 Qwen API Request: {url}")
+                print(f"🔧 Headers: {headers}")
+                print(f"🔧 Data: {data}")
+                
+                response = requests.post(url, headers=headers, json=data, timeout=30)
+                
+                print(f"🔧 Qwen Response Status: {response.status_code}")
+                print(f"🔧 Qwen Response: {response.text[:500]}...")
+                
+                if response.status_code == 200:
+                    response_data = response.json()
+                    if "output" in response_data and "text" in response_data["output"]:
+                        ai_response = response_data["output"]["text"]
+                        confidence = 0.8  # Default confidence for Qwen
+                    else:
+                        raise Exception(f"Qwen API unexpected response format: {response_data}")
+                else:
+                    raise Exception(f"Qwen API HTTP {response.status_code}: {response.text}")
+                    
+            else:
+                # Use OpenAI-compatible client (for both OpenAI and Qwen)
+                response = self.client.chat.completions.create(
+                    model=self.model_name,
+                    messages=messages,
+                    max_tokens=settings.max_tokens,
+                    temperature=settings.temperature,
+                    presence_penalty=0.1,
+                    frequency_penalty=0.1
+                )
+                
+                ai_response = response.choices[0].message.content
+                
+                # Calculate confidence based on response characteristics
+                confidence = self._calculate_confidence(
+                    user_query, ai_response, context_data, response
+                )
+            
             # Extract decision factors
             decision_factors = {
                 "model_used": self.model_name,
@@ -341,14 +301,13 @@ class TransparentChatbot:
                 "response_length": len(ai_response),
                 "temperature": settings.temperature
             }
-
+            
             return {
                 "answer": ai_response,
                 "confidence": confidence,
-                "factors": decision_factors,
-                "raw_response": response
+                "factors": decision_factors,                "raw_response": response
             }
-
+            
         except Exception as e:
             print(f"OpenAI API error: {str(e)}")
             print(f"Error type: {type(e).__name__}")
@@ -562,38 +521,21 @@ class TransparentChatbot:
         """Check for bias and calculate fairness score"""
         
         try:
-            print(f"🔧 DEBUG: Running advanced bias detection on query: '{user_query[:50]}...'")
-            
-            # Analyze user input for bias first
-            input_bias_analysis = advanced_bias_detector.analyze_input_bias(user_query, context_data)
-            
-            # Analyze AI response for bias
-            response_bias_analysis = advanced_bias_detector.analyze_response_bias(
-                ai_response, user_query, context_data
+            print(f"🔧 DEBUG: Running bias detection on query: '{user_query[:50]}...'")
+            bias_results = bias_detector.detect_bias(
+                user_query, ai_response, context_data
             )
             
-            # Combine analyses
-            bias_results = {
-                "input_bias": input_bias_analysis,
-                "response_bias": response_bias_analysis,
-                "bias_detected": input_bias_analysis["is_biased"] or response_bias_analysis["is_biased"],
-                "bias_types": list(set(input_bias_analysis["bias_types"] + response_bias_analysis["bias_types"])),
-                "overall_bias_score": max(input_bias_analysis["overall_bias_score"], response_bias_analysis["overall_bias_score"]),
-                "severity_level": max(input_bias_analysis["severity_level"], response_bias_analysis["severity_level"], key=lambda x: ["none", "low", "medium", "high"].index(x))
-            }
-            
-            print(f"🔧 DEBUG: Advanced bias detection results - Input biased: {input_bias_analysis['is_biased']}, Response biased: {response_bias_analysis['is_biased']}")
+            print(f"🔧 DEBUG: Bias detection results: {bias_results.get('bias_detected', False)}")
             if bias_results.get('bias_detected', False):
                 print(f"🔧 DEBUG: Bias types detected: {bias_results.get('bias_types', [])}")
             
-            # Calculate fairness score (1.0 = fair, 0.0 = completely biased)
-            fairness_score = 1.0 - bias_results["overall_bias_score"]
+            fairness_score = bias_detector.calculate_fairness_score(bias_results)
             
             return bias_results, fairness_score
             
         except Exception as e:
-            print(f"🔧 DEBUG: Advanced bias detection error: {str(e)}")
-            logger.error(f"Bias detection error: {e}")
+            print(f"🔧 DEBUG: Bias detection error: {str(e)}")
             return {"bias_check_error": str(e)}, 0.5
     
     def search_memory(
@@ -766,302 +708,6 @@ class TransparentChatbot:
             "confidence": confidence,
             "factors": decision_factors,            "raw_response": None
         }
-
-    def _generate_ollama_response(self, user_query: str, context_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Generate response using Ollama API with robust error handling"""
-        import requests
-        import re
-        from requests.adapters import HTTPAdapter
-        from urllib3.util.retry import Retry
-        
-        # Build messages
-        system_prompt = self._build_system_prompt(context_data)
-        messages = [{"role": "system", "content": system_prompt}]
-        
-        # Add recent conversation history
-        for item in context_data.get("recent_context", [])[-3:]:
-            messages.append({"role": "user", "content": item["query"]})
-            messages.append({"role": "assistant", "content": item["response"]})
-        
-        messages.append({"role": "user", "content": user_query})
-        
-        # Configure session with retries
-        session = requests.Session()
-        retry_strategy = Retry(
-            total=3,
-            backoff_factor=1,
-            status_forcelist=[429, 500, 502, 503, 504],
-        )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
-        session.mount("http://", adapter)
-        
-        url = "http://localhost:11434/api/chat"
-        data = {
-            "model": self.ollama_model,
-            "messages": messages,
-            "stream": False,
-            "options": {
-                "temperature": settings.temperature,
-                "num_predict": settings.max_tokens,
-                "top_p": 0.9,
-                "top_k": 40
-            }
-        }
-        
-        try:
-            response = session.post(url, json=data, timeout=120)
-            
-            if response.status_code == 200:
-                response_data = response.json()
-                ai_response = response_data.get("message", {}).get("content", "")
-                
-                # Clean response (remove <think> tags and artifacts)
-                ai_response = self._clean_ollama_response(ai_response)
-                
-                # Calculate confidence based on response quality
-                confidence = self._calculate_ollama_confidence(ai_response, response_data)
-                
-                decision_factors = {
-                    "model_used": self.ollama_model,
-                    "context_items_used": len(context_data.get("sources", [])),
-                    "recent_context_count": len(context_data.get("recent_context", [])),
-                    "similar_memories_count": len(context_data.get("similar_memories", [])),
-                    "response_length": len(ai_response),
-                    "temperature": settings.temperature,
-                    "provider": "ollama",
-                    "cleaned": True
-                }
-                
-                return {
-                    "answer": ai_response,
-                    "confidence": confidence,
-                    "factors": decision_factors,
-                    "raw_response": response_data
-                }
-            else:
-                raise Exception(f"Ollama API HTTP {response.status_code}: {response.text}")
-                
-        except requests.exceptions.ConnectionError:
-            print("❌ Ollama server not available. Please start Ollama with 'ollama serve'")
-            return self._generate_fallback_response(user_query, context_data)
-        except requests.exceptions.Timeout:
-            print("⏱️ Ollama request timed out. Model may be too large or busy.")
-            return self._generate_fallback_response(user_query, context_data)
-        except Exception as e:
-            print(f"❌ Ollama API error: {str(e)}")
-            return self._generate_fallback_response(user_query, context_data)
-        finally:
-            session.close()
-
-    def _clean_ollama_response(self, response: str) -> str:
-        """Clean Ollama response from artifacts and thinking tags"""
-        import re
-        
-        # Remove <think> blocks
-        response = re.sub(r'<think>.*?</think>', '', response, flags=re.DOTALL)
-        
-        # Remove leading/trailing whitespace
-        response = response.strip()
-        
-        # Remove excessive newlines
-        response = re.sub(r'\n{3,}', '\n\n', response)
-        
-        # Ensure we have content
-        if not response or len(response.strip()) < 10:
-            return "I apologize, but I couldn't generate a proper response. Please try rephrasing your question."
-        
-        return response
-
-    def _calculate_ollama_confidence(self, response: str, response_data: Dict) -> float:
-        """Calculate confidence score for Ollama response"""
-        confidence_factors = []
-        
-        # Response length factor
-        response_length = len(response.split())
-        if 20 <= response_length <= 300:
-            confidence_factors.append(0.9)
-        elif 10 <= response_length <= 500:
-            confidence_factors.append(0.7)
-        else:
-            confidence_factors.append(0.5)
-        
-        # Response quality indicators
-        if any(phrase in response.lower() for phrase in ['i apologize', 'i cannot', 'i don\'t know']):
-            confidence_factors.append(0.6)
-        else:
-            confidence_factors.append(0.8)
-        
-        # Check for completeness (ends with punctuation)
-        if response.strip() and response.strip()[-1] in '.!?':
-            confidence_factors.append(0.8)
-        else:
-            confidence_factors.append(0.7)
-        
-        # Model-specific factors
-        if 'qwen' in self.ollama_model.lower():
-            confidence_factors.append(0.85)  # Qwen is generally reliable
-        else:
-            confidence_factors.append(0.8)
-        
-        return min(sum(confidence_factors) / len(confidence_factors), 1.0)
-
-    async def _evaluate_response_async(
-        self,
-        user_query: str,
-        response: str,
-        context: str,
-        conversation_id: str
-    ) -> None:
-        """
-        Asynchronously evaluate the response using Opik.
-        
-        Args:
-            user_query: User's input query
-            response: Generated response
-            context: Context used for generation
-            conversation_id: Unique conversation identifier
-        """
-        try:
-            if self.opik_evaluator:
-                evaluation_result = await evaluate_chatbot_response(
-                    evaluator=self.opik_evaluator,
-                    user_input=user_query,
-                    bot_response=response,
-                    context=context
-                )
-                
-                # Log evaluation results
-                overall_score = evaluation_result.get("overall_score", 0.0)
-                recommendations = evaluation_result.get("recommendations", [])
-                
-                logger.info(f"Response evaluation completed for conversation {conversation_id}")
-                logger.info(f"Overall score: {overall_score:.3f}")
-                
-                if recommendations:
-                    logger.info(f"Recommendations: {'; '.join(recommendations[:2])}")
-                
-                # Store evaluation results in database for future analysis
-                try:
-                    db_manager.store_evaluation_result(
-                        conversation_id=conversation_id,
-                        evaluation_data=evaluation_result
-                    )
-                except Exception as db_error:
-                    logger.warning(f"Failed to store evaluation in database: {db_error}")
-                    
-        except Exception as e:
-            logger.error(f"Error during response evaluation: {e}")
-
-    def _generate_bias_education_response(self, bias_analysis: Dict[str, Any]) -> Optional[str]:
-        """
-        Generate an educational response when bias is detected in user input.
-        
-        Args:
-            bias_analysis: Results from bias analysis
-            
-        Returns:
-            Educational response string or None
-        """
-        try:
-            bias_types = bias_analysis.get("bias_types", [])
-            severity = bias_analysis.get("severity_level", "none")
-            recommendations = bias_analysis.get("recommendations", [])
-            
-            if not bias_types or severity == "none":
-                return None
-            
-            # Generate educational response based on bias types
-            response_parts = [
-                "I notice your question contains language that might reflect unconscious bias. "
-                "I'd like to help you explore this topic in a more inclusive way."
-            ]
-            
-            if "gender_bias" in bias_types:
-                response_parts.append(
-                    "Gender bias often involves assumptions about what people can or should do based on their gender. "
-                    "It's more accurate and fair to consider individual capabilities regardless of gender."
-                )
-            
-            if "racial_bias" in bias_types:
-                response_parts.append(
-                    "Racial bias involves generalizations about people based on their race or ethnicity. "
-                    "Each person is unique, and it's important to avoid stereotypes that can be harmful."
-                )
-            
-            if "age_bias" in bias_types:
-                response_parts.append(
-                    "Age bias involves assumptions about capabilities based on age. "
-                    "People of all ages have diverse skills, experiences, and perspectives to offer."
-                )
-            
-            if "religious_bias" in bias_types:
-                response_parts.append(
-                    "Religious bias involves generalizations about people based on their faith. "
-                    "It's important to respect religious diversity and avoid stereotypes."
-                )
-            
-            if "lgbtq_bias" in bias_types:
-                response_parts.append(
-                    "LGBTQ+ bias involves assumptions about sexual orientation or gender identity. "
-                    "Everyone deserves respect regardless of their identity."
-                )
-            
-            # Add recommendations
-            if recommendations:
-                response_parts.append("Here are some suggestions for more inclusive language:")
-                response_parts.extend(f"• {rec}" for rec in recommendations[:3])
-            
-            response_parts.append(
-                "Would you like to rephrase your question, or would you prefer information about this topic "
-                "from a more balanced perspective?"
-            )
-            
-            return "\n\n".join(response_parts)
-            
-        except Exception as e:
-            logger.error(f"Error generating bias education response: {e}")
-            return None
-
-    def get_evaluation_summary(self, limit: int = 10) -> Dict[str, Any]:
-        """
-        Get summary of recent evaluations.
-        
-        Args:
-            limit: Number of recent evaluations to include
-            
-        Returns:
-            Summary of evaluation metrics and trends
-        """
-        if not self.opik_evaluator:
-            return {"message": "Evaluation not enabled"}
-        
-        return self.opik_evaluator.get_evaluation_summary(limit=limit)
-
-    async def evaluate_conversation_quality(self) -> Dict[str, Any]:
-        """
-        Evaluate the quality of the current conversation.
-        
-        Returns:
-            Conversation-level evaluation results
-        """
-        if not self.opik_evaluator:
-            return {"message": "Evaluation not enabled"}
-        
-        # Convert conversation history to evaluation format
-        conversation_data = []
-        for turn in self.conversation_history:
-            conversation_data.append({
-                "user": turn["user_query"],
-                "assistant": turn["ai_response"]
-            })
-        
-        if conversation_data:
-            return await self.opik_evaluator.evaluate_conversation_quality(
-                conversation_history=conversation_data,
-                criteria=["relevance", "coherence", "engagement"]
-            )
-        else:
-            return {"message": "No conversation history available"}
 
 # Example usage and testing functions
 if __name__ == "__main__":
