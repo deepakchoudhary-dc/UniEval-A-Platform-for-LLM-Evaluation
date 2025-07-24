@@ -49,6 +49,13 @@ class BiasDetector:
                 r"\bnursing is a (woman|women)'?s job\b",
                 r"\b(woman|women)'?s job\b",
                 r"\b(man|men)'?s job\b",
+                r"\bwomen are (emotional|weak|bad at)\b",
+                r"\bmen are (strong|logical|good at)\b",
+                r"\bgirls can't (handle|understand|do)\b",
+                r"\bboys don't (cry|cook|care)\b",
+                r"\b(stay|belong) in the kitchen\b",
+                r"\bnot suitable for (women|men)\b",
+                r"\b(man|men)'?s job\b",
                 r"\b(unusual|weird|strange) because.*is a (woman|man)'?s\b",
                 r"\b(strong|weak) (men|women) (always|never|typically)\b",
                 r"\b(men|women) (always|never|typically|usually) (are|do|have)\b"
@@ -194,20 +201,92 @@ class BiasDetector:
         text_lower = text.lower()
         print(f"🔧 DEBUG: Checking text for bias patterns: '{text_lower[:100]}...'")
         
+        # Track total potential bias indicators
+        total_bias_indicators = 0
+        
         for bias_type, patterns in self.bias_patterns.items():
+            pattern_matches = []
             for pattern in patterns:
-                matches = re.findall(pattern, text_lower, re.IGNORECASE)
-                if matches:
-                    print(f"🔧 DEBUG: BIAS DETECTED! Type: {bias_type}, Pattern: {pattern}, Matches: {matches}")
+                try:
+                    matches = re.findall(pattern, text_lower, re.IGNORECASE)
+                    if matches:
+                        total_bias_indicators += len(matches)
+                        pattern_matches.extend(matches)
+                        print(f"🚨 BIAS DETECTED: {bias_type} - Pattern: {pattern} - Matches: {matches}")
+                        
+                        results["bias_detected"] = True
+                        if bias_type not in results["bias_types"]:
+                            results["bias_types"].append(bias_type)
+                        
+                        results["matches"].append({
+                            "bias_type": bias_type,
+                            "pattern": pattern,
+                            "matches": matches,
+                            "match_count": len(matches)
+                        })
+                        
+                except re.error as e:
+                    print(f"⚠️ Regex error in pattern {pattern}: {e}")
+                    continue
+            
+            # Calculate bias score based on pattern matches
+            if pattern_matches:
+                # Assign different severity scores to different bias types
+                severity_weights = {
+                    "gender_bias": 0.8,
+                    "racial_bias": 0.9,
+                    "age_bias": 0.6,
+                    "religious_bias": 0.7,
+                    "socioeconomic_bias": 0.6,
+                    "stereotyping": 0.7,
+                    "discriminatory_language": 0.9,
+                    "implicit_bias": 0.8,
+                    "profession_bias": 0.6
+                }
+                weight = severity_weights.get(bias_type, 0.5)
+                pattern_score = len(pattern_matches) * weight
+                results["bias_score"] = max(results["bias_score"], pattern_score)
+        
+        # Enhanced keyword-based detection for subtle bias
+        bias_keywords = [
+            "typical", "natural", "obviously", "of course", "everyone knows",
+            "naturally", "biologically", "genetically", "inherently",
+            "stereotypical", "traditional", "conventional", "usual"
+        ]
+        
+        sensitive_topics = [
+            "women", "men", "girls", "boys", "female", "male",
+            "black", "white", "asian", "hispanic", "african", "european",
+            "young", "old", "elderly", "teenager", "millennial", "boomer",
+            "muslim", "christian", "jewish", "hindu", "buddhist",
+            "poor", "rich", "wealthy", "homeless", "upper class", "lower class"
+        ]
+        
+        # Check for combinations of bias keywords with sensitive topics
+        for keyword in bias_keywords:
+            for topic in sensitive_topics:
+                pattern = rf"\b{keyword}.*{topic}\b|\b{topic}.*{keyword}\b"
+                if re.search(pattern, text_lower, re.IGNORECASE):
+                    total_bias_indicators += 1
                     results["bias_detected"] = True
-                    results["bias_types"].append(bias_type)
+                    if "contextual_bias" not in results["bias_types"]:
+                        results["bias_types"].append("contextual_bias")
+                    
                     results["matches"].append({
-                        "type": bias_type,
-                        "pattern": pattern,
-                        "matches": matches
+                        "bias_type": "contextual_bias",
+                        "pattern": f"keyword+topic: {keyword} + {topic}",
+                        "matches": [f"{keyword}...{topic}"],
+                        "match_count": 1
                     })
-                    # Increase bias score
-                    results["bias_score"] += 0.2
+                    
+                    print(f"🚨 CONTEXTUAL BIAS DETECTED: {keyword} + {topic}")
+        
+        # Adjust bias score based on total indicators
+        if total_bias_indicators > 0:
+            results["bias_score"] = min(1.0, results["bias_score"] + (total_bias_indicators * 0.1))
+        
+        print(f"📊 Pattern detection complete. Bias detected: {results['bias_detected']}, Score: {results['bias_score']}")
+        return results
         
         results["bias_score"] = min(results["bias_score"], 1.0)
         return results

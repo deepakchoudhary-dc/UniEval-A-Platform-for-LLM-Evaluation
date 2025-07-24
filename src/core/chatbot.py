@@ -26,32 +26,56 @@ class TransparentChatbot:
         self.model_name = model_name or settings.default_model
         self.session_id = str(uuid.uuid4())
         
-        # Initialize OpenAI client with fallback
-        api_key = settings.openai_api_key
-        self.use_openai = (
-            api_key and 
-            api_key.strip() and 
-            api_key.strip() != "your_openai_api_key_here" and
-            api_key.startswith(("sk-", "sk-proj-", "sk-or-"))
-        )
+        # Check model provider configuration
+        self.model_provider = getattr(settings, 'model_provider', 'openai').lower()
         
-        if self.use_openai:
-            if api_key.startswith("sk-or-"):
-                # OpenRouter setup (OpenAI-compatible)
-                self.client = OpenAI(
-                    api_key=api_key,
-                    base_url="https://openrouter.ai/api/v1"
-                )
-                self.model_name = "qwen/qwen-2.5-72b-instruct"  # Default Qwen model on OpenRouter
-                print(f"✅ OpenRouter client initialized with key: {api_key[:15]}...")
-                print(f"   Using model: {self.model_name}")
-            else:
-                # OpenAI setup  
-                self.client = OpenAI(api_key=api_key)
-                print(f"✅ OpenAI client initialized with key: {api_key[:15]}...")
-        else:
+        # Initialize based on model provider
+        if self.model_provider == 'ollama':
+            # Ollama setup
+            self.use_ollama = True
+            self.use_openai = False
             self.client = None
-            print(f"⚠️ No valid API key found. Using fallback mode.")        
+            self.model_name = getattr(settings, 'ollama_model', 'qwen2.5:7b')
+            print(f"✅ Ollama configured with model: {self.model_name}")
+            
+            # Test Ollama connection
+            try:
+                import requests
+                test_response = requests.get("http://localhost:11434/api/version", timeout=5)
+                if test_response.status_code == 200:
+                    print(f"✅ Ollama server is running")
+                else:
+                    print(f"⚠️ Ollama server responded with status: {test_response.status_code}")
+            except Exception as e:
+                print(f"⚠️ Cannot connect to Ollama server: {e}")
+        else:
+            # OpenAI/OpenRouter setup with fallback
+            self.use_ollama = False
+            api_key = settings.openai_api_key
+            self.use_openai = (
+                api_key and 
+                api_key.strip() and 
+                api_key.strip() != "your_openai_api_key_here" and
+                api_key.startswith(("sk-", "sk-proj-", "sk-or-"))
+            )
+            
+            if self.use_openai:
+                if api_key.startswith("sk-or-"):
+                    # OpenRouter setup (OpenAI-compatible)
+                    self.client = OpenAI(
+                        api_key=api_key,
+                        base_url="https://openrouter.ai/api/v1"
+                    )
+                    self.model_name = "qwen/qwen-2.5-72b-instruct"  # Default Qwen model on OpenRouter
+                    print(f"✅ OpenRouter client initialized with key: {api_key[:15]}...")
+                    print(f"   Using model: {self.model_name}")
+                else:
+                    # OpenAI setup  
+                    self.client = OpenAI(api_key=api_key)
+                    print(f"✅ OpenAI client initialized with key: {api_key[:15]}...")
+            else:
+                self.client = None
+                print(f"⚠️ No valid API key found. Using fallback mode.")        
         # Conversation context
         self.conversation_history = []
         self.current_context = {}
@@ -203,8 +227,8 @@ class TransparentChatbot:
     def _generate_response(self, user_query: str, context_data: Dict[str, Any]) -> Dict[str, Any]:
         """Generate AI response using OpenAI/OpenRouter with context or fallback"""
         
-        # If OpenAI is not available, use fallback response
-        if not self.use_openai or not self.client:
+        # If OpenAI is not available and not using Ollama, use fallback response
+        if not self.use_ollama and (not self.use_openai or not self.client):
             return self._generate_fallback_response(user_query, context_data)
         
         # Build system prompt with context
@@ -222,8 +246,45 @@ class TransparentChatbot:
           # Add current query
         messages.append({"role": "user", "content": user_query})
         
-        try:            # Generate response based on client type
-            if self.client == "qwen_http":
+        try:
+            if self.use_ollama:
+                # Use Ollama API
+                import requests
+                
+                url = "http://localhost:11434/api/chat"
+                data = {
+                    "model": self.model_name,
+                    "messages": messages,
+                    "stream": False,
+                    "options": {
+                        "temperature": settings.temperature,
+                        "num_predict": settings.max_tokens
+                    }
+                }
+                
+                print(f"🔧 Ollama API Request to: {url}")
+                print(f"🔧 Using model: {self.model_name}")
+                
+                response = requests.post(url, json=data, timeout=60)
+                
+                print(f"🔧 Ollama Response Status: {response.status_code}")
+                
+                if response.status_code == 200:
+                    response_data = response.json()
+                    if "message" in response_data and "content" in response_data["message"]:
+                        raw_response = response_data["message"]["content"]
+                        
+                        # Clean up the response - remove thinking tags
+                        ai_response = self._clean_model_response(raw_response)
+                        
+                        confidence = 0.9  # High confidence for local Ollama
+                        print(f"✅ Ollama response received: {ai_response[:100]}...")
+                    else:
+                        raise Exception(f"Ollama API unexpected response format: {response_data}")
+                else:
+                    raise Exception(f"Ollama API HTTP {response.status_code}: {response.text}")
+                    
+            elif self.client == "qwen_http":
                 # Use HTTP requests for Qwen API - Correct DashScope format
                 import requests
                 
@@ -295,6 +356,7 @@ class TransparentChatbot:
             # Extract decision factors
             decision_factors = {
                 "model_used": self.model_name,
+                "model_provider": getattr(self, 'model_provider', 'unknown'),
                 "context_items_used": len(context_data.get("sources", [])),
                 "recent_context_count": len(context_data.get("recent_context", [])),
                 "similar_memories_count": len(context_data.get("similar_memories", [])),
@@ -320,7 +382,10 @@ class TransparentChatbot:
         
         base_prompt = """You are a helpful AI assistant with access to conversation memory. 
         You should provide accurate, helpful responses while being transparent about your reasoning.
-        When referencing previous conversations, be clear about what information you're using."""
+        When referencing previous conversations, be clear about what information you're using.
+        
+        You can use <think>...</think> tags to show your reasoning process before providing your answer.
+        This helps users understand how you arrived at your response."""
         
         context_parts = []
         
@@ -410,13 +475,13 @@ class TransparentChatbot:
             "detailed_explanations": {}
         }
         
-        # LIME explanation
+        # LIME explanation - Text-based explanation for the response
         if self.enable_lime:
             try:
-                lime_explanation = lime_explainer.explain_response_generation(
-                    user_query,
-                    context_data,
-                    lambda query, context: response_data,
+                # Use the enhanced text prediction explainer
+                lime_explanation = lime_explainer.explain_text_prediction(
+                    text=response_data.get("answer", ""),
+                    predict_fn=None,  # Will use default predictor
                     num_features=8
                 )
                 
@@ -424,37 +489,93 @@ class TransparentChatbot:
                 explanations["detailed_explanations"]["lime"] = lime_explanation
                 
                 # Generate human-readable explanation
-                explanations["lime_explanation"] = lime_explainer.generate_human_readable_explanation(
-                    lime_explanation, self.explanation_detail
-                )
+                explanations["lime_explanation"] = self._create_lime_summary(lime_explanation)
                 
             except Exception as e:
                 explanations["lime_error"] = str(e)
+                print(f"LIME Error: {e}")
         
-        # SHAP explanation
+        # SHAP explanation - Text classification for response quality
         if self.enable_shap:
             try:
-                shap_explanation = shap_explainer.explain_response_factors(
-                    user_query,
-                    context_data,
-                    lambda query, context: response_data
+                # Use the enhanced text classification explainer
+                shap_explanation = shap_explainer.explain_text_classification(
+                    text=response_data.get("answer", ""),
+                    classifier_fn=None,  # Will use default classifier
+                    max_evals=100  # Reduced for performance
                 )
                 
                 explanations["methods_used"].append("shap")
                 explanations["detailed_explanations"]["shap"] = shap_explanation
                 
                 # Generate summary
-                explanations["shap_summary"] = shap_explainer.generate_explanation_summary(
-                    shap_explanation
-                )
+                explanations["shap_summary"] = self._create_shap_summary(shap_explanation)
                 
             except Exception as e:
                 explanations["shap_error"] = str(e)
+                print(f"SHAP Error: {e}")
         
         # Create unified summary
         explanations["summary"] = self._create_unified_explanation_summary(explanations)
         
         return explanations
+    
+    def _create_lime_summary(self, lime_explanation: Dict[str, Any]) -> str:
+        """Create human-readable summary from LIME explanation"""
+        if lime_explanation.get("error"):
+            return f"LIME analysis encountered an error: {lime_explanation['error']}"
+        
+        features = lime_explanation.get("features", [])
+        if not features:
+            return "LIME analysis could not identify significant features."
+        
+        # Get top positive and negative features
+        positive_features = [f for f in features if f["weight"] > 0][:3]
+        negative_features = [f for f in features if f["weight"] < 0][:3]
+        
+        summary_parts = []
+        
+        if positive_features:
+            pos_words = [f["feature"] for f in positive_features]
+            summary_parts.append(f"Words that contributed positively: {', '.join(pos_words)}")
+        
+        if negative_features:
+            neg_words = [f["feature"] for f in negative_features]
+            summary_parts.append(f"Words that contributed negatively: {', '.join(neg_words)}")
+        
+        prediction_score = lime_explanation.get("prediction_score")
+        if prediction_score is not None:
+            summary_parts.append(f"Overall response quality score: {prediction_score:.3f}")
+        
+        return ". ".join(summary_parts)
+    
+    def _create_shap_summary(self, shap_explanation: Dict[str, Any]) -> str:
+        """Create human-readable summary from SHAP explanation"""
+        if shap_explanation.get("error"):
+            return f"SHAP analysis encountered an error: {shap_explanation['error']}"
+        
+        explanations = shap_explanation.get("explanations", [])
+        if not explanations:
+            return "SHAP analysis could not identify significant features."
+        
+        # Get top contributors
+        top_contributors = explanations[:5]
+        
+        summary_parts = []
+        prediction = shap_explanation.get("prediction")
+        base_value = shap_explanation.get("base_value", 0.5)
+        
+        if prediction is not None:
+            summary_parts.append(f"SHAP prediction score: {prediction:.3f} (baseline: {base_value:.3f})")
+        
+        if top_contributors:
+            contrib_desc = []
+            for contrib in top_contributors:
+                impact = "+" if contrib["contribution"] == "positive" else "-"
+                contrib_desc.append(f"{contrib['token']} ({impact}{contrib['magnitude']:.3f})")
+            summary_parts.append(f"Top word contributions: {', '.join(contrib_desc)}")
+        
+        return ". ".join(summary_parts)
     
     def _create_unified_explanation_summary(self, explanations: Dict[str, Any]) -> Dict[str, Any]:
         """Create a unified summary from multiple explanation methods"""
@@ -474,6 +595,7 @@ class TransparentChatbot:
                 summary["key_factors"].append({
                     "factor": feature["feature"],
                     "impact": "positive" if feature["weight"] > 0 else "negative",
+                    "strength": abs(feature["weight"]),
                     "method": "lime"
                 })
         
@@ -483,32 +605,29 @@ class TransparentChatbot:
             shap_explanations = shap_data.get("explanations", [])[:3]  # Top 3
             for exp in shap_explanations:
                 summary["key_factors"].append({
-                    "factor": exp["feature"],
+                    "factor": exp["token"],
                     "impact": exp["contribution"],
+                    "strength": exp["magnitude"],
                     "method": "shap"
                 })
         
-        # Data sources
-        if "context_analysis" in explanations.get("detailed_explanations", {}).get("lime", {}):
-            context_analysis = explanations["detailed_explanations"]["lime"]["context_analysis"]
-            important_features = context_analysis.get("important_features", [])
-            for feature in important_features[:2]:
-                summary["data_sources_used"].append(feature["name"])
-          # Generate reasoning text
+        # Sort by strength
+        summary["key_factors"].sort(key=lambda x: x["strength"], reverse=True)
+        
+        # Create reasoning text
         if summary["key_factors"]:
-            reasoning_parts = [
-                "This response was generated considering several key factors:"
-            ]
-            
-            for i, factor in enumerate(summary["key_factors"][:3], 1):
+            reasoning_parts = []
+            for factor in summary["key_factors"][:3]:
                 impact_text = "positively influenced" if factor["impact"] == "positive" else "negatively influenced"
-                reasoning_parts.append(
-                    f"{i}. '{factor['factor']}' {impact_text} the response (detected by {factor['method'].upper()})"
-                )
+                reasoning_parts.append(f"'{factor['factor']}' {impact_text} the response")
             
-            summary["reasoning"] = " ".join(reasoning_parts)
+            summary["reasoning"] = "Key findings: " + "; ".join(reasoning_parts)
         else:
-            summary["reasoning"] = "This response was generated using the AI model's training knowledge without specific contextual factors being identified."
+            summary["reasoning"] = "No significant factors identified in the explanation analysis."
+        
+        # Add data sources
+        if "methods_used" in explanations:
+            summary["data_sources_used"] = explanations["methods_used"]
         
         return summary
     
@@ -660,6 +779,40 @@ class TransparentChatbot:
         """Set a specific session ID"""
         self.session_id = session_id
         db_manager.create_or_update_session(session_id)
+    
+    def _clean_model_response(self, raw_response: str) -> str:
+        """Extract thinking and answer parts from model response"""
+        import re
+        
+        print(f"🔧 DEBUG: Raw response input: {raw_response[:200]}...")
+        
+        # Extract thinking part
+        thinking_match = re.search(r'<think>(.*?)</think>', raw_response, flags=re.DOTALL)
+        thinking_part = ""
+        if thinking_match:
+            thinking_part = thinking_match.group(1).strip()
+            print(f"🔧 DEBUG: Found thinking part: {len(thinking_part)} characters")
+        
+        # Remove <think>...</think> blocks to get the answer
+        answer_part = re.sub(r'<think>.*?</think>', '', raw_response, flags=re.DOTALL)
+        answer_part = re.sub(r'\n\s*\n', '\n\n', answer_part).strip()
+        print(f"🔧 DEBUG: Answer part: {len(answer_part)} characters")
+        
+        # Format the response with thinking and answer separated
+        if thinking_part and answer_part:
+            formatted_response = f"**Thinking Process:**\n{thinking_part}\n\n**Answer:**\n{answer_part}"
+        elif thinking_part:
+            # Only thinking, no separate answer
+            formatted_response = f"**Thinking Process:**\n{thinking_part}"
+        elif answer_part:
+            # Only answer, no thinking
+            formatted_response = answer_part
+        else:
+            # Neither part found, return original or default
+            formatted_response = raw_response.strip() if raw_response.strip() else "I apologize, but I need to provide a clearer response to your question."
+        
+        print(f"🔧 DEBUG: Final formatted response: {len(formatted_response)} characters")
+        return formatted_response
     
     def _generate_fallback_response(self, user_query: str, context_data: Dict[str, Any]) -> Dict[str, Any]:
         """Generate fallback response when OpenAI is not available"""

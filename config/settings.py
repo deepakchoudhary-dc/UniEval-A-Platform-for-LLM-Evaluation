@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     openrouter_api_key: str = ""
     huggingface_api_key: str = ""
     
+    # Opik Configuration
+    opik_api_key: str = ""
+    opik_project_name: str = "transparent-ai-chatbot"
+    opik_workspace: str = "enterprise-ai"
+    
     # Database
     database_url: str = "sqlite:///chatbot_memory.db"
     
@@ -33,8 +38,10 @@ class Settings(BaseSettings):
     # Search Settings
     search_index_path: str = "data/search_index"
     max_search_results: int = 10
-      # Model Settings
+    # Model Settings
     default_model: str = "gpt-3.5-turbo"
+    model_provider: str = "openai"  # openai, ollama, etc.
+    ollama_model: str = "llama2"  # Default Ollama model
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     max_tokens: int = 4000
     temperature: float = 0.7
@@ -64,6 +71,7 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = False
+        extra = "allow"  # Allow extra fields to prevent validation errors
 
 
 # Global settings instance

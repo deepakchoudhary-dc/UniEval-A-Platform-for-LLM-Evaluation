@@ -28,7 +28,7 @@ class LIMEExplainer:
     def explain_text_prediction(
         self,
         text: str,
-        predict_fn: Callable,
+        predict_fn: Callable = None,
         num_features: int = 10,
         num_samples: int = 1000
     ) -> Dict[str, Any]:
@@ -43,6 +43,10 @@ class LIMEExplainer:
         """
         
         try:
+            # If no prediction function provided, create a simple sentiment analyzer
+            if predict_fn is None:
+                predict_fn = self._create_default_predictor()
+            
             # Generate explanation
             explanation = self.text_explainer.explain_instance(
                 text,
@@ -65,8 +69,8 @@ class LIMEExplainer:
             for feature, weight in explanation.as_list():
                 explanation_data["features"].append({
                     "feature": feature,
-                    "weight": weight,
-                    "importance": abs(weight)
+                    "weight": float(weight),  # Ensure it's a float
+                    "importance": float(abs(weight))  # Ensure it's a float
                 })
             
             # Sort by importance
@@ -75,7 +79,15 @@ class LIMEExplainer:
             # Get prediction probability if available
             try:
                 local_pred = explanation.local_pred[1] if hasattr(explanation, 'local_pred') else None
-                explanation_data["local_prediction"] = local_pred
+                explanation_data["local_prediction"] = float(local_pred) if local_pred is not None else None
+            except:
+                pass
+            
+            # Add prediction score from the actual prediction
+            try:
+                pred_result = predict_fn([text])
+                if len(pred_result) > 0 and len(pred_result[0]) > 1:
+                    explanation_data["prediction_score"] = float(pred_result[0][1])  # Positive class probability
             except:
                 pass
             
@@ -88,6 +100,47 @@ class LIMEExplainer:
                 "text": text,
                 "features": []
             }
+    
+    def _create_default_predictor(self) -> Callable:
+        """Create a default sentiment/quality predictor for text"""
+        import random
+        import re
+        
+        def simple_predictor(texts):
+            """Simple rule-based predictor for demonstration"""
+            predictions = []
+            
+            for text in texts:
+                text_lower = text.lower()
+                
+                # Simple scoring based on text characteristics
+                positive_words = ['good', 'great', 'excellent', 'amazing', 'wonderful', 
+                                'helpful', 'useful', 'clear', 'informative', 'accurate']
+                negative_words = ['bad', 'terrible', 'awful', 'useless', 'confusing', 
+                                'wrong', 'unclear', 'unhelpful', 'biased', 'offensive']
+                
+                positive_score = sum(1 for word in positive_words if word in text_lower)
+                negative_score = sum(1 for word in negative_words if word in text_lower)
+                
+                # Length factor (longer responses might be more detailed)
+                length_factor = min(len(text.split()) / 50.0, 1.0)
+                
+                # Question marks might indicate uncertainty
+                question_factor = -0.1 * text.count('?')
+                
+                # Calculate base score
+                base_score = 0.5 + (positive_score - negative_score) * 0.1 + length_factor * 0.2 + question_factor
+                
+                # Add some randomness but keep it consistent for the same text
+                random.seed(hash(text) % 1000)
+                noise = (random.random() - 0.5) * 0.2
+                
+                final_score = max(0.1, min(0.9, base_score + noise))
+                predictions.append([1 - final_score, final_score])
+            
+            return np.array(predictions)
+        
+        return simple_predictor
     
     def explain_response_generation(
         self,

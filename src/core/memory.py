@@ -36,10 +36,10 @@ class MemoryManager:
         # Initialize ChromaDB for vector storage (if available)
         if HAS_CHROMADB:
             try:
-                self.chroma_client = chromadb.Client(ChromaSettings(
-                    chroma_db_impl="duckdb+parquet",
-                    persist_directory=settings.search_index_path
-                ))
+                # Use the new ChromaDB configuration
+                self.chroma_client = chromadb.PersistentClient(
+                    path=settings.search_index_path
+                )
                 
                 try:
                     self.collection = self.chroma_client.get_collection("conversations")
@@ -47,8 +47,10 @@ class MemoryManager:
                     self.collection = self.chroma_client.create_collection("conversations")
                     
                 self.has_vector_db = True
+                print("✅ ChromaDB initialized successfully")
             except Exception as e:
                 print(f"Warning: ChromaDB initialization failed: {e}")
+                print("Using fallback text-based search (ChromaDB not available)")
                 self.chroma_client = None
                 self.collection = None
                 self.has_vector_db = False
