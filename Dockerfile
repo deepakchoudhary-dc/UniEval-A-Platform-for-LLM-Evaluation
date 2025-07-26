@@ -1,3 +1,4 @@
+# This file helps the user to install the project using docker. Here are the following details..
 FROM python:3.9-slim
 
 WORKDIR /app
