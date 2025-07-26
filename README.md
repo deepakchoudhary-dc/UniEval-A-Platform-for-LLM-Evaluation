@@ -10,6 +10,7 @@ An advanced AI chatbot featuring human-like memory, transparent decision-making,
 - **Fairness**: Bias detection and mitigation tools
 - **Audit Logging**: Complete decision-making process tracking
 - **Model Cards**: Automated documentation of AI capabilities
+- This project also includes the security trails and observability cards for the LLMs.
 
 ## Quick Start
 
