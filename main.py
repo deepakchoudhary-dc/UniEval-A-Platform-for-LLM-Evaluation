@@ -282,10 +282,13 @@ def run_api_mode(host: str, port: int):
         import uvicorn
         from src.api.routes import app
         
+        print(f"✅ API server starting at http://{host}:{port}")
+        print(f"📝 API documentation available at http://{host}:{port}/docs")
         uvicorn.run(app, host=host, port=port)
         
-    except ImportError:
-        print("❌ Error: uvicorn not installed. Install with: pip install uvicorn")
+    except ImportError as e:
+        print(f"❌ Error: Missing dependency - {e}")
+        print("Please install missing packages with: pip install fastapi")
     except Exception as e:
         print(f"❌ Error starting API server: {e}")
 

@@ -780,6 +780,44 @@ class TransparentChatbot:
         self.session_id = session_id
         db_manager.create_or_update_session(session_id)
     
+    async def evaluate_memory(self, query: str, response: str) -> Dict[str, Any]:
+        """
+        Evaluate memory performance and retrieval accuracy
+        """
+        # Get current memory stats
+        memory_stats = memory_manager.get_memory_stats()
+        
+        # Calculate memory utilization
+        total_memories = memory_stats.get('total_memories', 0)
+        memory_utilization = min(total_memories / 1000, 1.0)  # Normalize to 1000 max
+        
+        # Get retrieval context for this query
+        context_data = self._get_conversation_context(query)
+        retrieved_items = len(context_data.get('sources', []))
+        similar_memories = len(context_data.get('similar_memories', []))
+        
+        # Calculate retrieval accuracy (simplified)
+        retrieval_accuracy = 0.8 if retrieved_items > 0 else 0.3
+        
+        # Calculate relevance score based on context usage
+        relevance_score = min((retrieved_items + similar_memories) / 10, 1.0)
+        
+        recommendations = []
+        if memory_utilization < 0.2:
+            recommendations.append("Consider adding more training conversations to improve memory")
+        if retrieval_accuracy < 0.5:
+            recommendations.append("Review search algorithms to improve retrieval accuracy")
+        if relevance_score < 0.3:
+            recommendations.append("Enhance context relevance matching")
+        
+        return {
+            'memory_utilization': memory_utilization,
+            'retrieval_accuracy': retrieval_accuracy,
+            'relevance_score': relevance_score,
+            'memory_stats': memory_stats,
+            'recommendations': recommendations
+        }
+    
     def _clean_model_response(self, raw_response: str) -> str:
         """Extract thinking and answer parts from model response"""
         import re

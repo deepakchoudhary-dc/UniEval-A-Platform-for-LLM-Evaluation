@@ -293,6 +293,68 @@ class DatabaseManager:
         
         self.db_session.commit()
     
+    async def evaluate_performance(self) -> Dict[str, Any]:
+        """
+        Evaluate database performance metrics
+        """
+        try:
+            # Basic performance metrics
+            total_conversations = self.db_session.query(ConversationEntry).count()
+            recent_conversations = self.db_session.query(ConversationEntry).filter(
+                ConversationEntry.timestamp >= datetime.utcnow() - timedelta(hours=24)
+            ).count()
+            
+            # Calculate average response times
+            avg_response_time = self.db_session.query(ConversationEntry.response_time_ms).filter(
+                ConversationEntry.response_time_ms.isnot(None)
+            ).all()
+            
+            if avg_response_time:
+                avg_time = sum(t[0] for t in avg_response_time if t[0]) / len(avg_response_time)
+            else:
+                avg_time = 0
+            
+            # Calculate health score based on various factors
+            health_score = 0.0
+            if total_conversations > 100:
+                health_score += 0.3
+            if avg_time < 2000:  # Less than 2 seconds
+                health_score += 0.4
+            if recent_conversations > 0:
+                health_score += 0.3
+            
+            health_score = min(health_score, 1.0)
+            
+            performance_metrics = {
+                'total_conversations': total_conversations,
+                'recent_conversations_24h': recent_conversations,
+                'average_response_time_ms': avg_time,
+                'database_size_estimate': total_conversations * 1024,  # Rough estimate
+            }
+            
+            optimization_suggestions = []
+            if avg_time > 3000:
+                optimization_suggestions.append("Consider optimizing database queries")
+            if total_conversations > 10000:
+                optimization_suggestions.append("Consider archiving old conversations")
+            if health_score < 0.5:
+                optimization_suggestions.append("Review database configuration and indexing")
+            
+            return {
+                'status': 'healthy' if health_score > 0.7 else 'degraded',
+                'performance_metrics': performance_metrics,
+                'health_score': health_score,
+                'optimization_suggestions': optimization_suggestions
+            }
+            
+        except Exception as e:
+            return {
+                'status': 'error',
+                'performance_metrics': {},
+                'health_score': 0.0,
+                'optimization_suggestions': [f"Database error: {str(e)}"]
+            }
+    
     def close(self):
         """Close database connection"""
         self.db_session.close()
